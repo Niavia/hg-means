@@ -1,0 +1,6 @@
+autopep8==1.4.3
+numpy==1.16.2
+pep8==1.7.1
+pycodestyle==2.5.0
+scipy==1.2.1
+tqdm==4.31.1
