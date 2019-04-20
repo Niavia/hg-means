@@ -2,11 +2,12 @@ from hybrid_ga import HGMeans, ProblemDescription
 from storage import HGMeansStore
 import uci_ml_repo as repo
 from tqdm import tqdm
+import numpy as np
 import logging
 import utils
 import os
 
-
+SEED = 250
 DESCRIPTION_FMT = """
 Task name: {0}
     number of clusters: {1}
@@ -26,7 +27,7 @@ def save_checkpoint_fn_factory(instance_name, store, pbar):
 
 
 def run_experiment(task_name, dataset, labels, num_clusters,
-                   population_param, terminating_param, store):
+                   population_param, terminating_param, store, seed=None):
     instance_name = f"{task_name}-cz-{num_clusters}-tp-{terminating_param}-pp-{population_param}"  # noqa
 
     logging.info(DESCRIPTION_FMT.format(task_name,
@@ -40,12 +41,13 @@ def run_experiment(task_name, dataset, labels, num_clusters,
                                             population_param,
                                             terminating_param)
 
+    random_gen = np.random.RandomState(seed)
     state = store.load_checkpoint(instance_name)
     if state:
-        hg = HGMeans.from_state(problem_descriptor, state)
+        hg = HGMeans.from_state(problem_descriptor, random_gen, state)
         current_step = state["current_step"]
     else:
-        hg = HGMeans(problem_descriptor)
+        hg = HGMeans(problem_descriptor, random_gen)
         current_step = 0
 
     with tqdm(total=terminating_param[1],
@@ -83,5 +85,4 @@ if __name__ == "__main__":
             continue
         for num_clusters in cluster_sizes:
             run_experiment(task_name, dataset, labels, num_clusters,
-                           population_param, terminating_param, store)
-            print("\n")
+                           population_param, terminating_param, store, SEED)

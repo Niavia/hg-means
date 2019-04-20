@@ -9,43 +9,42 @@ from .solution import Solution
 _LOG_BASE10_OF_2 = 3.010299956639811952137388947244930267681898814621085413104274611e-1  # noqa
 
 
-def create_population(problem_description, random_state):
+def create_population(problem_description, random_gen):
     dataset = problem_description.dataset
     num_points = len(dataset)
     num_clusters = problem_description.num_clusters
     min_population_size = problem_description.min_population_size
     population = []
     for _ in range(min_population_size):
-        centroids_indices = random_state.choice(
+        centroids_indices = random_gen.choice(
             num_points,
             num_clusters,
             replace=False)
         centroids = dataset[centroids_indices]
-        mutation_param = random_state.uniform()
-        solution = Solution(problem_description,
+        mutation_param = random_gen.uniform()
+        solution = Solution(problem_description, random_gen,
                             mutation_param, centroids=centroids)
-        solution.repair(random_state)
         solution.improve_by_local_search()
         population.append(solution)
     return population
 
 
-def tournament_selection(population, k, random_state):
+def tournament_selection(population, k, random_gen):
     best = None
     for _ in range(k):
-        ind = random_state.randint(len(population))
+        ind = random_gen.randint(len(population))
         if best is None or population[ind].cost < best.cost:
             best = population[ind]
     return best
 
 
-def cross_over(parent1, parent2, random_state):
+def cross_over(parent1, parent2, random_gen):
     distance_matrix = cdist(parent1.coordinate_chromosome,
                             parent2.coordinate_chromosome,
                             "euclidean")
     matching = hungarian(distance_matrix)
     child_centroids = [
-        _choose(a, b, random_state)
+        _choose(a, b, random_gen)
         for a, b in zip(parent1.coordinate_chromosome[matching[0]],
                         parent2.coordinate_chromosome[matching[1]])
     ]
@@ -53,13 +52,14 @@ def cross_over(parent1, parent2, random_state):
     child_mutation_param = (parent1.mutation_param +
                             parent2.mutation_param) / 2
     child = Solution(parent1.problem_description,
+                     random_gen,
                      child_mutation_param,
                      centroids=child_centroids)
-    child.repair(random_state)
+    child.repair()
     return child
 
 
-def select_survivors(population, size, random_state):
+def select_survivors(population, size, random_gen):
     population_as_set = set(population)
     groups = defaultdict(list)
     for solution in population:
@@ -71,7 +71,7 @@ def select_survivors(population, size, random_state):
     clone_keys = [k for k, v in groups.items() if len(v) > 1]
     for key in sorted(clone_keys, key=itemgetter(0), reverse=True):
         clones = groups[key]
-        to_save = random_state.randint(0, len(clones))
+        to_save = random_gen.randint(0, len(clones))
         clones[0], clones[to_save] = clones[to_save], clones[0]
         to_be_removed = clones[1:len(population_as_set) - size + 1]
         population_as_set.difference_update(to_be_removed)
@@ -83,8 +83,8 @@ def select_survivors(population, size, random_state):
     return list(population_as_set)
 
 
-def _choose(a, b, random_state):
-    if random_state.uniform() > 0.5:
+def _choose(a, b, random_gen):
+    if random_gen.uniform() > 0.5:
         return a
     return b
 

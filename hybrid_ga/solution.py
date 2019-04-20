@@ -1,15 +1,17 @@
 import numpy as np
 from scipy.spatial.distance import cdist
-from scipy.cluster.vq import kmeans2
+from scipy.cluster.vq import kmeans2, ClusterError
+import utils
 
 
 class Solution(object):
     MUTATION_RATE = 0.2
 
-    def __init__(self, problem_description, mutation_param,
-                 membership=None, centroids=None):
+    def __init__(self, problem_description, random_gen,
+                 mutation_param, membership=None, centroids=None):
         self.problem_description = problem_description
         self.mutation_param = mutation_param
+        self.random_gen = random_gen
         self.membership_chromosome = None
         self.coordinate_chromosome = None
         self._clusters_cardinality = None
@@ -27,6 +29,12 @@ class Solution(object):
         membership = np.array(membership)
         cluster_ids, membership_chromosome = np.unique(membership,
                                                        return_inverse=True)
+        # the returned inverses assigned to membership_chromosome are indices
+        # into the cluster_ids. If the cluster_ids form an
+        # index set with no gap, i.e, all elements in cluster_ids
+        # are from 0 to len(cluster_ids) - 1, then the passed in membership
+        # equals the membership_chromosome. But we can't rely on the user
+        # passing in a gap-free index set.
 
         if len(membership) < num_points:
             raise ValueError("Membership chromosome is too short.")
@@ -50,8 +58,8 @@ class Solution(object):
         dataset = self.problem_description.dataset
         num_clusters = self.problem_description.num_clusters
         num_features = dataset.shape[1]
-        coordinate_chromosome = np.array(centroids)
-        num_clusters_in_cc, num_features_in_cc = coordinate_chromosome.shape
+        centroids = np.array(centroids)
+        num_clusters_in_cc, num_features_in_cc = centroids.shape
 
         if num_features_in_cc < num_features:
             raise ValueError("Not enough features in coordinate chromosome.")
@@ -62,13 +70,35 @@ class Solution(object):
         elif num_clusters_in_cc > num_clusters:
             raise ValueError("Too many clusters in coordinate chromosome.")
 
-        membership_chromosome = cdist(dataset,
-                                      coordinate_chromosome,
-                                      "euclidean"
-                                      ).argmin(axis=1)
+        membership = cdist(dataset,
+                           centroids,
+                           "euclidean"
+                           ).argmin(axis=1)
 
-        self.membership_chromosome = membership_chromosome
-        self.coordinate_chromosome = coordinate_chromosome
+        # If there is a tie in the euclidean distance calculated by cdist,
+        # argmin always returns the index of the first centroid in the tie.
+        # Therefore, we may have a case where a centroid isn't assigned any
+        # data points because all data points are closer or equally close to
+        # some preceding centroid. Consequently, there will be gaps
+        # in membership.
+
+        # detect and fix gap in membership
+        cluster_ids, membership_chromosome = np.unique(membership,
+                                                       return_inverse=True)
+        has_gap = len(cluster_ids) != cluster_ids[-1] + 1
+        if has_gap:
+            used_centroids = [
+                centroids[i]
+                for i in cluster_ids
+            ]
+            self.membership_chromosome = membership_chromosome
+            self.coordinate_chromosome = np.vstack(used_centroids)
+            # a gap will lead to a decrease in number of centroids that
+            # must be repaired
+            self.repair()
+        else:
+            self.membership_chromosome = membership_chromosome
+            self.coordinate_chromosome = centroids
 
     def __compute_cost(self):
         dataset = self.problem_description.dataset
@@ -82,15 +112,22 @@ class Solution(object):
                               return_counts=True)
         return np.sort(counts).tolist()
 
-    def mutate(self, random_state):
-        self.mutation_param += random_state.uniform(-Solution.MUTATION_RATE,
-                                                    Solution.MUTATION_RATE)
+    def sum_square_error(self):
+        dataset = self.problem_description.dataset
+        membership = self.membership_chromosome
+        centroids = self.coordinate_chromosome
+        deviations = dataset - centroids[membership]
+        return (deviations * deviations).sum()
+
+    def mutate(self):
+        self.mutation_param += self.random_gen.uniform(
+            -Solution.MUTATION_RATE, Solution.MUTATION_RATE)
         self.mutation_param = max(0, min(1, self.mutation_param))
         alpha = self.mutation_param
         dataset = self.problem_description.dataset
         num_points = dataset.shape[0]
-        num_clusters = self.problem_description.num_clusters
-        index_of_centroid_to_delete = random_state.randint(0, num_clusters)
+        index_of_centroid_to_delete = self.random_gen.randint(
+            0, self.coordinate_chromosome.shape[0])
         temp_centroids = np.delete(self.coordinate_chromosome,
                                    index_of_centroid_to_delete, axis=0)
 
@@ -103,14 +140,19 @@ class Solution(object):
                                            (1 - alpha) / num_points) +
                                    (alpha * dist_to_nearest_centroid / norm))
 
-        new_centroid_index = random_state.choice(num_points,
-                                                 p=selection_probabilities)
+        new_centroid_index = self.random_gen.choice(
+            num_points,
+            p=selection_probabilities)
         new_centroid = dataset[new_centroid_index]
         centroids = np.append(temp_centroids, [new_centroid], axis=0)
         self.__coordinate_to_membership(centroids)
-        self.repair(random_state)
+        self.repair()
 
-    def repair(self, random_state):
+    def repair(self):
+        """ It modifies the chromosomes to ensure the required number of
+            clusters can be formed from them.
+        """
+        # precondition: membership_chromosome has no gap.
         num_required_clusters = self.problem_description.num_clusters
         dataset = self.problem_description.dataset
         num_points = dataset.shape[0]
@@ -128,15 +170,15 @@ class Solution(object):
                                          ).min(axis=1)
 
         empty_cluster_id = cluster_ids.max() + 1
-        membership = self.membership_chromosome
+        membership = np.copy(self.membership_chromosome)
         clusters_cardinality = clusters_cardinality.tolist()
         while num_empty_clusters > 0:
             # select a datapoint el at random with preference given to points
             # far away from their centroids
             norm = dist_to_nearest_centroid.sum()
             selection_probabilities = dist_to_nearest_centroid / norm
-            rand_el_index = random_state.choice(num_points,
-                                                p=selection_probabilities)
+            rand_el_index = self.random_gen.choice(num_points,
+                                                   p=selection_probabilities)
             el_centroid_index = membership[rand_el_index]
             # if the selected element isn't the only one in its cluster,
             if clusters_cardinality[el_centroid_index] > 1:
@@ -146,24 +188,31 @@ class Solution(object):
                 membership[rand_el_index] = empty_cluster_id
                 # prevent the element from being selected again
                 dist_to_nearest_centroid[rand_el_index] = 0
-                # update loop control and other variables
+                # update the loop control and other variables
                 num_empty_clusters -= 1
                 empty_cluster_id += 1
 
         self.__membership_to_coordinate(membership)
 
     def improve_by_local_search(self):
-        centroids, labels = kmeans2(
-            data=self.problem_description.dataset,
-            k=self.coordinate_chromosome,
-            minit="matrix"
-        )
-        self.membership_chromosome = labels
-        self.coordinate_chromosome = centroids
+        while True:
+            try:
+                centroids, labels = kmeans2(
+                    data=self.problem_description.dataset,
+                    k=self.coordinate_chromosome,
+                    minit="matrix",
+                    missing="raise",
+                )
+                self.membership_chromosome = labels
+                self.coordinate_chromosome = centroids
+                return
+            except ClusterError:
+                self.repair()
 
     def evaluate(self):
         return {
-            "cost": self.cost
+            "cost": self.cost,
+            "sse": self.sum_square_error()
         }
 
     @property
@@ -186,9 +235,10 @@ class Solution(object):
         }
 
     @classmethod
-    def from_state(cls, problem_description, state_dict):
+    def from_state(cls, problem_description, random_gen, state_dict):
         return cls(
             problem_description,
+            random_gen,
             mutation_param=state_dict["mutation_param"],
             membership=np.array(
                 state_dict["membership_chromosome"], dtype=np.int)
